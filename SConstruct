@@ -30,12 +30,17 @@ if os.path.isdir(os.path.join(tbb_sdk_path, "include")):
 if os.path.isdir(os.path.join(tbb_sdk_path, "lib")):
     env.AppendUnique(LIBPATH=[os.path.join(tbb_sdk_path, "lib")])
 
-if env["platform"] == "web":
+if env["platform"] == "web" or (env["platform"] == "ios" and ARGUMENTS.get("static_usd", "no") == "yes"):
     usd_archives = sorted(glob.glob(os.path.join(usd_sdk_path, "lib", "libusd_*.a")))
     if not usd_archives:
-        raise RuntimeError("Web builds require a static OpenUSD SDK.")
+        raise RuntimeError("static_usd=yes requires a static OpenUSD SDK.")
     env.AppendUnique(CPPDEFINES=["PXR_STATIC"])
-    env.Append(LINKFLAGS=["-Wl,--whole-archive"] + usd_archives + ["-Wl,--no-whole-archive", "--use-port=zlib"])
+    if env["platform"] == "web":
+        env.Append(LINKFLAGS=["-Wl,--whole-archive"] + usd_archives + ["-Wl,--no-whole-archive", "--use-port=zlib"])
+    else:
+        env.Append(LINKFLAGS=[f"-Wl,-force_load,{archive}" for archive in usd_archives])
+        env.AppendUnique(LINKFLAGS=["-framework", "Foundation"])
+        env.AppendUnique(LIBS=["objc"])
     env.AppendUnique(LIBS=["tbb"])
 else:
     env.AppendUnique(LIBS=[

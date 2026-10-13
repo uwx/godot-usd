@@ -113,15 +113,21 @@ Platform requirements:
 - Linux binaries require Ubuntu 22.04-compatible system libraries or newer.
 - Windows requires the Microsoft Visual C++ 2015–2022 Redistributable matching
   the binary architecture; the extension and USD/TBB use the dynamic MSVC runtime.
-- macOS builds target macOS 11 or newer. Apple/iOS binaries are unsigned; sign and
-  embed their dynamic dependencies when exporting with Xcode.
+- macOS builds target macOS 11 or newer. Apple binaries are unsigned; sign them
+  and their dependencies when exporting.
+- iOS targets iOS 12 or newer. Each extension is packaged as an unsigned framework
+  with USD/TBB statically linked and plugin resources inside the framework, avoiding
+  broken references when Godot embeds frameworks. Sign them during Xcode export.
 - Android builds use NDK 28.1.13356709, API 24, and bundle `libc++_shared.so`.
   A narrowly scoped patch addresses OpenUSD's Android `NOFILE`/`__environ` build
   issues ([upstream #4093](https://github.com/PixarAnimationStudios/OpenUSD/issues/4093)).
   Android/iOS exports must extract packed USD assets and their dependencies to a
   real filesystem location before loading; OpenUSD cannot read Godot's PCK directly.
+  Android plugin resources must likewise be deployed to real storage; the packaged
+  `usd` directory is not declared as an Android shared library.
 - Web builds use Emscripten 4.0.9 and require a matching threaded Godot Web export
-  template with GDExtension support (`dlink_enabled=yes`) and cross-origin isolation.
+  template with GDExtension support (`dlink_enabled=yes`), a compatible Wasm exception
+  runtime, and cross-origin isolation.
   OpenUSD reads from the Emscripten filesystem, not Godot's packed-resource filesystem:
   USD assets and plugin resources must be made available there by the hosting export.
   The archive is not a drop-in replacement for a non-threaded Web export.
@@ -262,8 +268,9 @@ Open `godot-usd/project` in Godot after building. The extension manifest is
 `project/godot_usd.gdextension`; binaries are written to
 `project/bin/<platform>-<arch>/`. Local builds still use the configured SDK library
 paths at runtime. CI uses `bundle_dependencies=yes` to link against adjacent runtime
-libraries instead. Web builds require a static OpenUSD/TBB SDK; native builds use
-shared libraries.
+libraries instead. Web and CI iOS builds use `static_usd=yes` with a static OpenUSD/TBB
+SDK; other native builds use shared libraries. The iOS CI packaging step converts the
+raw local dylibs into self-contained frameworks and updates the packaged manifest.
 
 Smoke test:
 

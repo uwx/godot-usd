@@ -169,8 +169,10 @@ jobs:
                 '-DCMAKE_INSTALL_RPATH=@loader_path' -DCMAKE_INSTALL_NAME_DIR=@rpath)
               ;;
             ios)
+              shared=OFF
               common+=(-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos
                 -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+                -DCMAKE_FIND_ROOT_PATH="$sdk"
                 '-DCMAKE_INSTALL_RPATH=@loader_path' -DCMAKE_INSTALL_NAME_DIR=@rpath)
               ;;
             linux)
@@ -180,12 +182,14 @@ jobs:
               git -C "$GITHUB_WORKSPACE/deps/OpenUSD" apply "$GITHUB_WORKSPACE/.github/patches/openusd-android.patch"
               common+=(-DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"
                 -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM=android-24
+                -DCMAKE_FIND_ROOT_PATH="$sdk" -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON
                 -DANDROID_STL=c++_shared '-DCMAKE_INSTALL_RPATH=$ORIGIN')
               ;;
             web)
               source "$GITHUB_WORKSPACE/deps/emsdk/emsdk_env.sh"
               shared=OFF
               common+=(-DCMAKE_TOOLCHAIN_FILE="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+                -DCMAKE_FIND_ROOT_PATH="$sdk"
                 '-DCMAKE_C_FLAGS=-pthread -fPIC -fwasm-exceptions -sSUPPORT_LONGJMP=wasm --use-port=zlib'
                 '-DCMAKE_CXX_FLAGS=-pthread -fPIC -fwasm-exceptions -sSUPPORT_LONGJMP=wasm --use-port=zlib')
               ;;
@@ -209,6 +213,9 @@ jobs:
           if [ "$PLATFORM" = windows ]; then
             extra+=(use_static_cpp=no)
           fi
+          if [ "$PLATFORM" = web ] || [ "$PLATFORM" = ios ]; then
+            extra+=(static_usd=yes)
+          fi
           if [ "$PLATFORM" = web ]; then
             source "$GITHUB_WORKSPACE/deps/emsdk/emsdk_env.sh"
           fi
@@ -226,7 +233,9 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import plistlib
           import shutil
+          import subprocess
           from pathlib import Path
 
           root = Path(os.environ["GITHUB_WORKSPACE"])
@@ -253,6 +262,25 @@ jobs:
           if not resources.is_dir():
               raise RuntimeError("OpenUSD plugin resources are missing")
           shutil.copytree(resources, binary_dir / "usd")
+          if platform == "ios":
+              for mode in ("debug", "release"):
+                  library = binary_dir / f"libgodot_usd.ios.template_{mode}.arm64.dylib"
+                  name = library.stem
+                  framework = binary_dir / f"{name}.framework"
+                  framework.mkdir()
+                  executable = framework / name
+                  shutil.move(library, executable)
+                  subprocess.run(["install_name_tool", "-id", f"@rpath/{name}.framework/{name}", str(executable)], check=True)
+                  shutil.copytree(resources, framework / "usd")
+                  info = {
+                      "CFBundleExecutable": name, "CFBundleName": name,
+                      "CFBundleIdentifier": f"org.godot-usd.{name.replace('_', '-')}",
+                      "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
+                      "CFBundleShortVersionString": "1.0", "MinimumOSVersion": "12.0",
+                      "CFBundleSupportedPlatforms": ["iPhoneOS"],
+                  }
+                  (framework / "Info.plist").write_bytes(plistlib.dumps(info))
+              shutil.rmtree(binary_dir / "usd")
           if platform == "android":
               triple = {"arm64": "aarch64-linux-android", "x86_64": "x86_64-linux-android"}[arch]
               libcxx = Path(os.environ["ANDROID_NDK_ROOT"]) / "toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib" / triple / "libc++_shared.so"
@@ -263,13 +291,17 @@ jobs:
           header = api["header"]
           minimum = f"{header['version_major']}.{header['version_minor']}"
           manifest = (root / "project/godot_usd.gdextension").read_text()
+          for mode in ("debug", "release"):
+              name = f"libgodot_usd.ios.template_{mode}.arm64"
+              manifest = manifest.replace(f"{name}.dylib", f"{name}.framework")
           manifest = manifest.replace('compatibility_minimum = "4.3"', f'compatibility_minimum = "{minimum}"')
           manifest += "\n[dependencies]\n\n"
           dependencies = {f"res://bin/{target}/{name}": "" for name in sorted(set(runtime))}
-          dependencies[f"res://bin/{target}/usd/"] = ""
+          if platform in ("linux", "windows", "macos"):
+              dependencies[f"res://bin/{target}/usd"] = ""
           for mode in ("debug", "release"):
               manifest += f"{platform}.{mode}.{arch} = {json.dumps(dependencies)}\n"
-          (package / "godot_usd.gdextension").write_text(manifest)
+          (package / "godot_usd.gdextension").write_text(manifest, encoding="utf-8", newline="\n")
           shutil.copy2(root / "LICENSE", package / "LICENSE")
           shutil.copy2(root / "README.md", package / "README.md")
           licenses = package / "licenses"
@@ -277,6 +309,8 @@ jobs:
           shutil.copy2(root / "deps/OpenUSD/LICENSE.txt", licenses / "OpenUSD.txt")
           shutil.copy2(root / "deps/oneTBB/LICENSE.txt", licenses / "oneTBB.txt")
           shutil.copy2(root / "deps/godot-cpp/LICENSE.md", licenses / "godot-cpp.md")
+          for text_file in [package / "LICENSE", package / "README.md", *licenses.iterdir()]:
+              text_file.write_text(text_file.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
           metadata = {
               "godot": os.environ["GODOT_TAG"], "godot_cpp": os.environ["GODOT_CPP_REVISION"],
               "openusd": os.environ["OPENUSD_VERSION"], "tbb": os.environ["TBB_VERSION"],
