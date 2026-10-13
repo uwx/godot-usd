@@ -146,7 +146,7 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/deps/emsdk/emsdk" install "$EMSCRIPTEN_VERSION"
           "$GITHUB_WORKSPACE/deps/emsdk/emsdk" activate "$EMSCRIPTEN_VERSION"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4.3.0
         with:
           name: godot-api
           path: deps/api
@@ -155,7 +155,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/sdk
-          key: sdk-v1-${{ matrix.os }}-${{ matrix.platform }}-${{ matrix.arch }}-usd${{ env.OPENUSD_VERSION }}-tbb${{ env.TBB_VERSION }}-ndk${{ env.NDK_VERSION }}-em${{ env.EMSCRIPTEN_VERSION }}-${{ hashFiles('SConstruct', '.github/workflows/build.yml') }}
+          key: sdk-v1-${{ matrix.os }}-${{ matrix.platform }}-${{ matrix.arch }}-usd${{ env.OPENUSD_VERSION }}-tbb${{ env.TBB_VERSION }}-ndk${{ env.NDK_VERSION }}-em${{ env.EMSCRIPTEN_VERSION }}-${{ hashFiles('SConstruct', '.github/workflows/build.yml', '.github/patches/openusd-android.patch') }}
       - name: Build OpenUSD and TBB
         if: steps.sdk.outputs.cache-hit != 'true'
         run: |
@@ -177,6 +177,7 @@ jobs:
               common+=('-DCMAKE_INSTALL_RPATH=$ORIGIN')
               ;;
             android)
+              git -C "$GITHUB_WORKSPACE/deps/OpenUSD" apply "$GITHUB_WORKSPACE/.github/patches/openusd-android.patch"
               common+=(-DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"
                 -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM=android-24
                 -DANDROID_STL=c++_shared '-DCMAKE_INSTALL_RPATH=$ORIGIN')
@@ -204,6 +205,10 @@ jobs:
           cmake --install "$RUNNER_TEMP/usd-build"
       - name: Build debug and release GDExtensions
         run: |
+          extra=()
+          if [ "$PLATFORM" = windows ]; then
+            extra+=(use_static_cpp=no)
+          fi
           if [ "$PLATFORM" = web ]; then
             source "$GITHUB_WORKSPACE/deps/emsdk/emsdk_env.sh"
           fi
@@ -214,7 +219,7 @@ jobs:
               tbb_sdk_path="$GITHUB_WORKSPACE/deps/sdk" \
               custom_api_file="$GITHUB_WORKSPACE/deps/api/extension_api.json" \
               disable_exceptions=no bundle_dependencies=yes \
-              ndk_version="$NDK_VERSION" -j2
+              ndk_version="$NDK_VERSION" "${extra[@]}" -j2
           done
       - name: Bundle runtime libraries and metadata
         run: |
@@ -334,11 +339,52 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4.3.0
         with:
           pattern: godot-usd-*
           path: dist
           merge-multiple: true
+      - name: Assemble all-platform package
+        env:
+          GODOT_VERSION: ${{ needs.godot.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import zipfile
+          from pathlib import Path
+
+          directory = Path("dist")
+          archives = sorted(directory.glob("*.zip"))
+          if not archives:
+              raise RuntimeError("No platform packages were downloaded")
+          output = directory / f"godot-usd-godot{os.environ['GODOT_VERSION']}-all-platforms.zip"
+          seen = {}
+          header = None
+          dependencies = []
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as combined:
+              for path in archives:
+                  with zipfile.ZipFile(path) as archive:
+                      for entry in archive.infolist():
+                          data = archive.read(entry)
+                          if entry.filename == "godot_usd.gdextension":
+                              base, separator, dependency = data.decode().partition("\n[dependencies]\n")
+                              if not separator or (header is not None and base != header):
+                                  raise RuntimeError("Platform manifests disagree")
+                              header = base
+                              dependencies.append(dependency.strip())
+                              continue
+                          digest = hashlib.sha256(data).digest()
+                          if entry.filename in seen:
+                              if seen[entry.filename] != digest:
+                                  raise RuntimeError(f"Conflicting package file: {entry.filename}")
+                              continue
+                          seen[entry.filename] = digest
+                          combined.writestr(entry, data)
+              if header is None:
+                  raise RuntimeError("Packages contain no manifest")
+              combined.writestr("godot_usd.gdextension", header + "\n[dependencies]\n\n" + "\n".join(dependencies) + "\n")
+          PY
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}

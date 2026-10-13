@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
-import os
 import glob
+import os
 
 
 def _expand(path):
@@ -21,7 +21,6 @@ if not os.path.isdir(os.path.join(usd_sdk_path, "include")) or not os.path.isdir
 env = SConscript(os.path.join(godot_cpp_path, "SConstruct"))
 
 env.Append(CPPPATH=["src"])
-env.AppendUnique(CXXFLAGS=["/std:c++17" if env["platform"] == "windows" else "-std=c++17"])
 env.AppendUnique(CPPPATH=[os.path.join(usd_sdk_path, "include")])
 env.AppendUnique(LIBPATH=[os.path.join(usd_sdk_path, "lib")])
 
@@ -53,6 +52,10 @@ else:
         "usd_arch",
         "tbb",
     ])
+
+if env["platform"] == "android":
+    env.AppendUnique(LINKFLAGS=["-nostdlib++"])
+    env.AppendUnique(LIBS=["c++_shared"])
 
 if env["platform"] in ("linux", "macos", "ios"):
     if ARGUMENTS.get("bundle_dependencies", "no") == "yes":

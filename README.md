@@ -103,16 +103,23 @@ Linux/macOS also run the existing regression suite (its process runner uses `/bi
 Mobile and Web jobs are compile/package checks, not device/browser runtime tests.
 
 To publish, push a version tag such as `v0.1.0`. Only after **all** builds and desktop
-tests succeed, the workflow creates a GitHub Release with the platform ZIPs and
-`SHA256SUMS.txt`. Ordinary branches, pull requests, scheduled runs, and manual runs
+tests succeed, the workflow creates a GitHub Release with the platform ZIPs, an
+all-platform ZIP with merged dependency declarations, and `SHA256SUMS.txt`.
+Ordinary branches, pull requests, scheduled runs, and manual runs
 never publish releases. Release write permissions are confined to the tag-only job.
 
 Platform requirements:
 
 - Linux binaries require Ubuntu 22.04-compatible system libraries or newer.
+- Windows requires the Microsoft Visual C++ 2015–2022 Redistributable matching
+  the binary architecture; the extension and USD/TBB use the dynamic MSVC runtime.
 - macOS builds target macOS 11 or newer. Apple/iOS binaries are unsigned; sign and
   embed their dynamic dependencies when exporting with Xcode.
 - Android builds use NDK 28.1.13356709, API 24, and bundle `libc++_shared.so`.
+  A narrowly scoped patch addresses OpenUSD's Android `NOFILE`/`__environ` build
+  issues ([upstream #4093](https://github.com/PixarAnimationStudios/OpenUSD/issues/4093)).
+  Android/iOS exports must extract packed USD assets and their dependencies to a
+  real filesystem location before loading; OpenUSD cannot read Godot's PCK directly.
 - Web builds use Emscripten 4.0.9 and require a matching threaded Godot Web export
   template with GDExtension support (`dlink_enabled=yes`) and cross-origin isolation.
   OpenUSD reads from the Emscripten filesystem, not Godot's packed-resource filesystem:
@@ -120,10 +127,10 @@ Platform requirements:
   The archive is not a drop-in replacement for a non-threaded Web export.
 - 32-bit native targets and iOS simulators are not included.
 
-Use the archive matching the editor platform for development and the archive matching
-the export platform for deployment. When combining archives, retain all `bin/`
-subdirectories and merge their manifest `[dependencies]` entries; otherwise replacing
-the manifest would discard another platform's dependency export declarations.
+Use the all-platform release archive when developing for multiple export targets.
+Individual platform archives can also be used alone. When combining individual archives,
+retain all `bin/` subdirectories and merge their manifest `[dependencies]` entries;
+otherwise replacing the manifest would discard another platform's dependency declarations.
 
 ## Two Ways to Use a USD Asset
 
