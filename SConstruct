@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os
+import glob
 
 
 def _expand(path):
@@ -20,6 +21,7 @@ if not os.path.isdir(os.path.join(usd_sdk_path, "include")) or not os.path.isdir
 env = SConscript(os.path.join(godot_cpp_path, "SConstruct"))
 
 env.Append(CPPPATH=["src"])
+env.AppendUnique(CXXFLAGS=["/std:c++17" if env["platform"] == "windows" else "-std=c++17"])
 env.AppendUnique(CPPPATH=[os.path.join(usd_sdk_path, "include")])
 env.AppendUnique(LIBPATH=[os.path.join(usd_sdk_path, "lib")])
 
@@ -29,8 +31,15 @@ if os.path.isdir(os.path.join(tbb_sdk_path, "include")):
 if os.path.isdir(os.path.join(tbb_sdk_path, "lib")):
     env.AppendUnique(LIBPATH=[os.path.join(tbb_sdk_path, "lib")])
 
-env.AppendUnique(
-    LIBS=[
+if env["platform"] == "web":
+    usd_archives = sorted(glob.glob(os.path.join(usd_sdk_path, "lib", "libusd_*.a")))
+    if not usd_archives:
+        raise RuntimeError("Web builds require a static OpenUSD SDK.")
+    env.AppendUnique(CPPDEFINES=["PXR_STATIC"])
+    env.Append(LINKFLAGS=["-Wl,--whole-archive"] + usd_archives + ["-Wl,--no-whole-archive", "--use-port=zlib"])
+    env.AppendUnique(LIBS=["tbb"])
+else:
+    env.AppendUnique(LIBS=[
         "usd_usdUtils",
         "usd_usdLux",
         "usd_usdShade",
@@ -43,18 +52,21 @@ env.AppendUnique(
         "usd_gf",
         "usd_arch",
         "tbb",
-    ]
-)
+    ])
 
-if env["platform"] in ("linux", "macos"):
-    env.AppendUnique(LINKFLAGS=[f"-Wl,-rpath,{os.path.join(usd_sdk_path, 'lib')}"])
-    if os.path.isdir(os.path.join(tbb_sdk_path, "lib")):
-        env.AppendUnique(LINKFLAGS=[f"-Wl,-rpath,{os.path.join(tbb_sdk_path, 'lib')}"])
+if env["platform"] in ("linux", "macos", "ios"):
+    if ARGUMENTS.get("bundle_dependencies", "no") == "yes":
+        origin = "@loader_path" if env["platform"] in ("macos", "ios") else "'$$ORIGIN'"
+        env.AppendUnique(LINKFLAGS=[f"-Wl,-rpath,{origin}"])
+    else:
+        env.AppendUnique(LINKFLAGS=[f"-Wl,-rpath,{os.path.join(usd_sdk_path, 'lib')}"])
+        if os.path.isdir(os.path.join(tbb_sdk_path, "lib")):
+            env.AppendUnique(LINKFLAGS=[f"-Wl,-rpath,{os.path.join(tbb_sdk_path, 'lib')}"])
 
 sources = Glob("src/*.cpp")
 
 library = env.SharedLibrary(
-    "project/bin/libgodot_usd{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
+    "project/bin/{}-{}/libgodot_usd{}{}".format(env["platform"], env["arch"], env["suffix"], env["SHLIBSUFFIX"]),
     source=sources,
 )
 
