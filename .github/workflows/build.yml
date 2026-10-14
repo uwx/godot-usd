@@ -351,10 +351,10 @@ jobs:
           # Hide the SDK to catch accidental runner-local runtime dependencies.
           mv "$GITHUB_WORKSPACE/deps/sdk" "$GITHUB_WORKSPACE/deps/sdk-hidden"
           trap 'mv "$GITHUB_WORKSPACE/deps/sdk-hidden" "$GITHUB_WORKSPACE/deps/sdk"' EXIT
-          "$godot" --headless --rendering-method gl_compatibility --editor --path "$test_project" --import
-          "$godot" --headless --rendering-method gl_compatibility --path "$test_project" --script res://test_load.gd
+          "$godot" --headless --editor --path "$test_project" --import
+          "$godot" --headless --path "$test_project" --script res://test_load.gd
           if [ "$TARGET_PLATFORM" != windows ]; then
-            "$godot" --headless --rendering-method gl_compatibility --path "$test_project" --script res://tests/run_all.gd
+            "$godot" --headless --path "$test_project" --script res://tests/run_all.gd
           fi
       - name: Archive package
         run: |
