@@ -325,13 +325,6 @@ jobs:
           }
           (package / f"build-{target}.json").write_text(json.dumps(metadata, indent=2) + "\n")
           PY
-      - name: Upload package for debugging
-        if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-package-linux-x86_64
-          path: dist/godot-usd-godot*-linux-x86_64
-          retention-days: 3
       - name: Test the relocated package
         if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'windows'
         run: |
@@ -358,6 +351,10 @@ jobs:
           # Hide the SDK to catch accidental runner-local runtime dependencies.
           mv "$GITHUB_WORKSPACE/deps/sdk" "$GITHUB_WORKSPACE/deps/sdk-hidden"
           trap 'mv "$GITHUB_WORKSPACE/deps/sdk-hidden" "$GITHUB_WORKSPACE/deps/sdk"' EXIT
+          # Godot 4.7 can segfault while shutting down a cold editor that is still
+          # regenerating its doc cache for GDExtension classes. Warm the caches first
+          # (tolerating that crash), then require a clean import.
+          "$godot" --headless --editor --path "$test_project" --import || echo "Cold editor import exited with $?; retrying with warm caches"
           "$godot" --headless --editor --path "$test_project" --import
           "$godot" --headless --path "$test_project" --script res://test_load.gd
           if [ "$TARGET_PLATFORM" != windows ]; then
