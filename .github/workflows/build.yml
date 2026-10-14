@@ -325,6 +325,13 @@ jobs:
           }
           (package / f"build-{target}.json").write_text(json.dumps(metadata, indent=2) + "\n")
           PY
+      - name: Upload package for debugging
+        if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-package-linux-x86_64
+          path: dist/godot-usd-godot*-linux-x86_64
+          retention-days: 3
       - name: Test the relocated package
         if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'windows'
         run: |
