@@ -1,0 +1,31 @@
+diff --git a/pxr/base/arch/daemon.cpp b/pxr/base/arch/daemon.cpp
+--- a/pxr/base/arch/daemon.cpp
++++ b/pxr/base/arch/daemon.cpp
+@@ -40,7 +40,11 @@ ArchCloseAllFiles(int nExcept, const int* exceptFds)
+ 
+     if (limits.rlim_cur == RLIM_INFINITY)
+     {
++#if defined(__ANDROID__)
++        maxfd = 256;
++#else
+         maxfd = NOFILE;
++#endif
+     }
+     else
+     {
+diff --git a/pxr/base/arch/stackTrace.cpp b/pxr/base/arch/stackTrace.cpp
+--- a/pxr/base/arch/stackTrace.cpp
++++ b/pxr/base/arch/stackTrace.cpp
+@@ -921,8 +921,12 @@
+ static int
+ nonLockingExecv(const char *path, char *const argv[])
+ {
+ #if defined(ARCH_OS_LINUX)
++#if defined(__ANDROID__)
++     return nonLockingLinux__execve (path, argv, environ);
++#else
+      return nonLockingLinux__execve (path, argv, __environ);
++#endif
+ #else
+      return execv(path, argv);
+ #endif

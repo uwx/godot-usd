@@ -62,16 +62,81 @@ Stage and composition
 
 ## Installing in a Godot Project
 
-1. Build the extension binary (see the *Building from source* section below).
-2. Copy the built library plus `project/godot_usd.gdextension` into your project. The
-   manifest expects the binaries at `res://bin/libgodot_usd.*`.
+1. Download a platform archive from [Releases](https://github.com/uwx/godot-usd/releases),
+   or build the extension binary (see the *Building from source* section below).
+2. Extract the archive into your project root, preserving its `bin/` directories and
+   `godot_usd.gdextension`. For local builds, copy `project/bin/` and the manifest instead.
+   Do not omit the bundled OpenUSD/TBB libraries or OpenUSD plugin resources.
 3. Open the project in Godot. The extension registers itself on first launch and `.usd*`
    files start appearing as scene assets in the filesystem dock.
 
 The extension targets `compatibility_minimum = "4.3"`. The local validated stack is Godot
 4.7.dev (`181b24ba2`) with `godot-cpp` at `6388e26`, OpenUSD 24.11
 (`PXR_VERSION 2608`), and TBB 2022.3.0.
-Currently shipped binaries target `macos.arm64`; other platforms need a local build.
+Automated builds target the latest stable Godot release, resolved once per workflow run;
+their manifests require that Godot major/minor version. They do not claim compatibility
+with older engines merely because the source manifest specifies 4.3.
+
+### Automated Builds and Releases
+
+The **Build GDExtension** workflow runs for pull requests, pushes to `main`/`master`,
+`v*` tags, manual dispatches, and weekly to pick up new stable Godot releases.
+It dumps the released engine's exact GDExtension API and uses the same resolved
+`godot-cpp` revision across every build.
+
+| Platform | Architectures |
+| --- | --- |
+| Linux | x86_64, arm64 |
+| Windows | x86_64, arm64 |
+| macOS | x86_64, arm64 |
+| Android | arm64, x86_64 |
+| iOS | arm64 (device) |
+| Web | wasm32 (threaded) |
+
+Each artifact contains both `template_debug` and `template_release` binaries, the
+manifest, runtime dependencies, USD plugin resources, dependency licenses, and a
+`build-<platform>-<arch>.json` recording exact versions and the source commit.
+Artifacts are retained for 30 days. OpenUSD 26.08 and oneTBB 2022.3.0 are built from
+source with imaging/Python disabled and the installed SDK is cached per target.
+Desktop jobs smoke-test the relocated package with the matching Godot editor;
+Linux/macOS also run the existing regression suite (its process runner uses `/bin/sh`).
+Mobile and Web jobs are compile/package checks, not device/browser runtime tests.
+
+To publish, push a version tag such as `v0.1.0`. Only after **all** builds and desktop
+tests succeed, the workflow creates a GitHub Release with the platform ZIPs, an
+all-platform ZIP with merged dependency declarations, and `SHA256SUMS.txt`.
+Ordinary branches, pull requests, scheduled runs, and manual runs
+never publish releases. Release write permissions are confined to the tag-only job.
+
+Platform requirements:
+
+- Linux binaries require Ubuntu 22.04-compatible system libraries or newer.
+- Windows requires the Microsoft Visual C++ 2015–2022 Redistributable matching
+  the binary architecture; the extension and USD/TBB use the dynamic MSVC runtime.
+- macOS builds target macOS 11 or newer. Apple binaries are unsigned; sign them
+  and their dependencies when exporting.
+- iOS targets iOS 12 or newer. Each extension is packaged as an unsigned framework
+  with USD/TBB statically linked and plugin resources inside the framework, avoiding
+  broken references when Godot embeds frameworks. Sign them during Xcode export.
+- Android builds use NDK 28.1.13356709, API 24, and bundle `libc++_shared.so`.
+  A narrowly scoped patch addresses OpenUSD's Android `NOFILE`/`__environ` build
+  issues ([upstream #4093](https://github.com/PixarAnimationStudios/OpenUSD/issues/4093)).
+  Android/iOS exports must extract packed USD assets and their dependencies to a
+  real filesystem location before loading; OpenUSD cannot read Godot's PCK directly.
+  Android plugin resources must likewise be deployed to real storage; the packaged
+  `usd` directory is not declared as an Android shared library.
+- Web builds use Emscripten 4.0.9 and require a matching threaded Godot Web export
+  template with GDExtension support (`dlink_enabled=yes`), a compatible Wasm exception
+  runtime, and cross-origin isolation.
+  OpenUSD reads from the Emscripten filesystem, not Godot's packed-resource filesystem:
+  USD assets and plugin resources must be made available there by the hosting export.
+  The archive is not a drop-in replacement for a non-threaded Web export.
+- 32-bit native targets and iOS simulators are not included.
+
+Use the all-platform release archive when developing for multiple export targets.
+Individual platform archives can also be used alone. When combining individual archives,
+retain all `bin/` subdirectories and merge their manifest `[dependencies]` entries;
+otherwise replacing the manifest would discard another platform's dependency declarations.
 
 ## Two Ways to Use a USD Asset
 
@@ -200,7 +265,12 @@ scons platform=macos target=template_debug arch=arm64 \
 ```
 
 Open `godot-usd/project` in Godot after building. The extension manifest is
-`project/godot_usd.gdextension`.
+`project/godot_usd.gdextension`; binaries are written to
+`project/bin/<platform>-<arch>/`. Local builds still use the configured SDK library
+paths at runtime. CI uses `bundle_dependencies=yes` to link against adjacent runtime
+libraries instead. Web and CI iOS builds use `static_usd=yes` with a static OpenUSD/TBB
+SDK; other native builds use shared libraries. The iOS CI packaging step converts the
+raw local dylibs into self-contained frameworks and updates the packaged manifest.
 
 Smoke test:
 

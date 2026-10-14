@@ -2351,7 +2351,7 @@ class UsdSceneBuilder {
 	Transform3D get_stage_correction_transform() const {
 		Basis root_basis;
 		if (up_axis == UsdGeomTokens->z) {
-			root_basis = Basis(Vector3(1, 0, 0), (real_t)-Math_PI * 0.5);
+			root_basis = Basis(Vector3(1, 0, 0), Math::deg_to_rad((real_t)-90.0));
 		}
 		root_basis = root_basis.scaled(Vector3((real_t)meters_per_unit, (real_t)meters_per_unit, (real_t)meters_per_unit));
 		return Transform3D(root_basis, Vector3());

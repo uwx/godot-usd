@@ -1,0 +1,438 @@
+name: Build GDExtension
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  OPENUSD_VERSION: '26.08'
+  TBB_VERSION: '2022.3.0'
+  SCONS_VERSION: '4.10.1'
+  NDK_VERSION: '28.1.13356709'
+  EMSCRIPTEN_VERSION: '4.0.9'
+
+jobs:
+  godot:
+    name: Resolve latest stable Godot
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      godot_cpp: ${{ steps.resolve.outputs.godot_cpp }}
+    steps:
+      - name: Resolve engine and bindings
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {data: release} = await github.rest.repos.getLatestRelease({
+              owner: 'godotengine', repo: 'godot'
+            });
+            if (!/^\d+\.\d+(?:\.\d+)?-stable$/.test(release.tag_name)) {
+              throw new Error(`Unexpected stable Godot tag: ${release.tag_name}`);
+            }
+            const asset = release.assets.find(a => a.name === `Godot_v${release.tag_name}_linux.x86_64.zip`);
+            if (!asset) throw new Error('Godot Linux editor asset is missing');
+            const {data: bindings} = await github.rest.repos.getCommit({
+              owner: 'godotengine', repo: 'godot-cpp', ref: 'master'
+            });
+            core.setOutput('tag', release.tag_name);
+            core.setOutput('version', release.tag_name.replace('-stable', ''));
+            core.setOutput('godot_cpp', bindings.sha);
+            core.setOutput('url', asset.browser_download_url);
+      - name: Dump the exact release API
+        env:
+          GODOT_URL: ${{ steps.resolve.outputs.url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot" "$RUNNER_TEMP/api"
+          curl --fail --location --retry 3 "$GODOT_URL" -o "$RUNNER_TEMP/godot.zip"
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          chmod +x "$RUNNER_TEMP/godot/"Godot*
+          cd "$RUNNER_TEMP/api"
+          "$RUNNER_TEMP/godot/"Godot* --headless --dump-extension-api
+          test -s extension_api.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-api
+          path: ${{ runner.temp }}/api/extension_api.json
+          if-no-files-found: error
+
+  build:
+    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    needs: godot
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: linux, arch: x86_64, os: ubuntu-22.04}
+          - {platform: linux, arch: arm64, os: ubuntu-22.04-arm}
+          - {platform: windows, arch: x86_64, os: windows-2022}
+          - {platform: windows, arch: arm64, os: windows-11-arm}
+          - {platform: macos, arch: x86_64, os: macos-15-intel}
+          - {platform: macos, arch: arm64, os: macos-15}
+          - {platform: android, arch: arm64, abi: arm64-v8a, os: ubuntu-22.04}
+          - {platform: android, arch: x86_64, abi: x86_64, os: ubuntu-22.04}
+          - {platform: ios, arch: arm64, os: macos-15}
+          - {platform: web, arch: wasm32, os: ubuntu-22.04}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
+      ANDROID_ABI: ${{ matrix.abi }}
+      GODOT_VERSION: ${{ needs.godot.outputs.version }}
+      GODOT_TAG: ${{ needs.godot.outputs.tag }}
+      GODOT_CPP_REVISION: ${{ needs.godot.outputs.godot_cpp }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: godotengine/godot-cpp
+          ref: ${{ needs.godot.outputs.godot_cpp }}
+          path: deps/godot-cpp
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: PixarAnimationStudios/OpenUSD
+          ref: v${{ env.OPENUSD_VERSION }}
+          path: deps/OpenUSD
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: uxlfoundation/oneTBB
+          ref: v${{ env.TBB_VERSION }}
+          path: deps/oneTBB
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install SCons
+        run: python -m pip install "scons==$SCONS_VERSION"
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.platform == 'windows'
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
+      - name: Install Android NDK
+        if: matrix.platform == 'android'
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        if: matrix.platform == 'web'
+        with:
+          repository: emscripten-core/emsdk
+          ref: ${{ env.EMSCRIPTEN_VERSION }}
+          path: deps/emsdk
+          persist-credentials: false
+      - name: Install Emscripten
+        if: matrix.platform == 'web'
+        run: |
+          "$GITHUB_WORKSPACE/deps/emsdk/emsdk" install "$EMSCRIPTEN_VERSION"
+          "$GITHUB_WORKSPACE/deps/emsdk/emsdk" activate "$EMSCRIPTEN_VERSION"
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: godot-api
+          path: deps/api
+      - name: Cache dependency SDK
+        id: sdk
+        uses: actions/cache@v4
+        with:
+          path: deps/sdk
+          key: sdk-v1-${{ matrix.os }}-${{ matrix.platform }}-${{ matrix.arch }}-usd${{ env.OPENUSD_VERSION }}-tbb${{ env.TBB_VERSION }}-ndk${{ env.NDK_VERSION }}-em${{ env.EMSCRIPTEN_VERSION }}-${{ hashFiles('SConstruct', '.github/workflows/build.yml', '.github/patches/openusd-android.patch') }}
+      - name: Build OpenUSD and TBB
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          sdk="$GITHUB_WORKSPACE/deps/sdk"
+          common=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$sdk"
+            -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
+          shared=ON
+          case "$PLATFORM" in
+            macos)
+              common+=(-DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+                '-DCMAKE_INSTALL_RPATH=@loader_path' -DCMAKE_INSTALL_NAME_DIR=@rpath)
+              ;;
+            ios)
+              shared=OFF
+              common+=(-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos
+                -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+                -DCMAKE_FIND_ROOT_PATH="$sdk"
+                '-DCMAKE_INSTALL_RPATH=@loader_path' -DCMAKE_INSTALL_NAME_DIR=@rpath)
+              ;;
+            linux)
+              common+=('-DCMAKE_INSTALL_RPATH=$ORIGIN')
+              ;;
+            android)
+              git -C "$GITHUB_WORKSPACE/deps/OpenUSD" apply "$GITHUB_WORKSPACE/.github/patches/openusd-android.patch"
+              common+=(-DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"
+                -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM=android-24
+                -DCMAKE_FIND_ROOT_PATH="$sdk" -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON
+                -DANDROID_STL=c++_shared '-DCMAKE_INSTALL_RPATH=$ORIGIN')
+              ;;
+            web)
+              source "$GITHUB_WORKSPACE/deps/emsdk/emsdk_env.sh"
+              shared=OFF
+              common+=(-DCMAKE_TOOLCHAIN_FILE="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+                -DCMAKE_FIND_ROOT_PATH="$sdk"
+                '-DCMAKE_C_FLAGS=-pthread -fPIC -fwasm-exceptions -sSUPPORT_LONGJMP=wasm --use-port=zlib'
+                '-DCMAKE_CXX_FLAGS=-pthread -fPIC -fwasm-exceptions -sSUPPORT_LONGJMP=wasm --use-port=zlib')
+              ;;
+          esac
+          cmake -S "$GITHUB_WORKSPACE/deps/oneTBB" -B "$RUNNER_TEMP/tbb-build" "${common[@]}" \
+            -DBUILD_SHARED_LIBS="$shared" -DTBB_TEST=OFF -DTBB_STRICT=OFF \
+            -DTBBMALLOC_BUILD=OFF -DTBB_ENABLE_IPO=OFF -DTBB_DISABLE_HWLOC_AUTOMATIC_SEARCH=ON
+          cmake --build "$RUNNER_TEMP/tbb-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/tbb-build"
+          cmake -S "$GITHUB_WORKSPACE/deps/OpenUSD" -B "$RUNNER_TEMP/usd-build" "${common[@]}" \
+            -DCMAKE_PREFIX_PATH="$sdk" -DBUILD_SHARED_LIBS="$shared" \
+            -DPXR_BUILD_TESTS=OFF -DPXR_BUILD_EXAMPLES=OFF -DPXR_BUILD_TUTORIALS=OFF \
+            -DPXR_BUILD_USD_TOOLS=OFF -DPXR_ENABLE_PYTHON_SUPPORT=OFF \
+            -DPXR_BUILD_IMAGING=OFF -DPXR_BUILD_USD_IMAGING=OFF -DPXR_BUILD_USDVIEW=OFF \
+            -DPXR_BUILD_EXEC=OFF -DPXR_BUILD_USD_VALIDATION=OFF -DPXR_BUILD_APPLE_FRAMEWORK=OFF
+          cmake --build "$RUNNER_TEMP/usd-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/usd-build"
+      - name: Build debug and release GDExtensions
+        run: |
+          extra=()
+          if [ "$PLATFORM" = windows ]; then
+            extra+=(use_static_cpp=no)
+          fi
+          if [ "$PLATFORM" = web ] || [ "$PLATFORM" = ios ]; then
+            extra+=(static_usd=yes)
+          fi
+          if [ "$PLATFORM" = web ]; then
+            source "$GITHUB_WORKSPACE/deps/emsdk/emsdk_env.sh"
+          fi
+          for target in template_debug template_release; do
+            python -m SCons platform="$PLATFORM" arch="$ARCH" target="$target" \
+              godot_cpp_path="$GITHUB_WORKSPACE/deps/godot-cpp" \
+              usd_sdk_path="$GITHUB_WORKSPACE/deps/sdk" \
+              tbb_sdk_path="$GITHUB_WORKSPACE/deps/sdk" \
+              custom_api_file="$GITHUB_WORKSPACE/deps/api/extension_api.json" \
+              disable_exceptions=no bundle_dependencies=yes \
+              ndk_version="$NDK_VERSION" "${extra[@]}" -j2
+          done
+      - name: Bundle runtime libraries and metadata
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import plistlib
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          platform, arch = os.environ["PLATFORM"], os.environ["ARCH"]
+          target = f"{platform}-{arch}"
+          package = root / "dist" / f"godot-usd-godot{os.environ['GODOT_VERSION']}-{target}"
+          binary_dir = package / "bin" / target
+          shutil.copytree(root / "project" / "bin" / target, binary_dir)
+          extension = {"windows": ".dll", "macos": ".dylib", "ios": ".dylib", "web": ".wasm"}.get(platform, ".so")
+          for mode in ("debug", "release"):
+              expected = binary_dir / f"libgodot_usd.{platform}.template_{mode}.{arch}{extension}"
+              if not expected.is_file():
+                  raise RuntimeError(f"Missing extension: {expected}")
+
+          sdk = root / "deps" / "sdk"
+          runtime = []
+          for directory in (sdk / "lib", sdk / "bin"):
+              if directory.exists():
+                  for path in directory.iterdir():
+                      if path.is_file() and (".so" in path.name or path.suffix in (".dll", ".dylib")):
+                          shutil.copy2(path, binary_dir / path.name, follow_symlinks=True)
+                          runtime.append(path.name)
+          resources = sdk / "lib" / "usd"
+          if not resources.is_dir():
+              raise RuntimeError("OpenUSD plugin resources are missing")
+          shutil.copytree(resources, binary_dir / "usd")
+          if platform == "ios":
+              for mode in ("debug", "release"):
+                  library = binary_dir / f"libgodot_usd.ios.template_{mode}.arm64.dylib"
+                  name = library.stem
+                  framework = binary_dir / f"{name}.framework"
+                  framework.mkdir()
+                  executable = framework / name
+                  shutil.move(library, executable)
+                  subprocess.run(["install_name_tool", "-id", f"@rpath/{name}.framework/{name}", str(executable)], check=True)
+                  shutil.copytree(resources, framework / "usd")
+                  info = {
+                      "CFBundleExecutable": name, "CFBundleName": name,
+                      "CFBundleIdentifier": f"org.godot-usd.{name.replace('_', '-')}",
+                      "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
+                      "CFBundleShortVersionString": "1.0", "MinimumOSVersion": "12.0",
+                      "CFBundleSupportedPlatforms": ["iPhoneOS"],
+                  }
+                  (framework / "Info.plist").write_bytes(plistlib.dumps(info))
+              shutil.rmtree(binary_dir / "usd")
+          if platform == "android":
+              triple = {"arm64": "aarch64-linux-android", "x86_64": "x86_64-linux-android"}[arch]
+              libcxx = Path(os.environ["ANDROID_NDK_ROOT"]) / "toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib" / triple / "libc++_shared.so"
+              shutil.copy2(libcxx, binary_dir / libcxx.name)
+              runtime.append(libcxx.name)
+
+          api = json.loads((root / "deps/api/extension_api.json").read_text())
+          header = api["header"]
+          minimum = f"{header['version_major']}.{header['version_minor']}"
+          manifest = (root / "project/godot_usd.gdextension").read_text()
+          for mode in ("debug", "release"):
+              name = f"libgodot_usd.ios.template_{mode}.arm64"
+              manifest = manifest.replace(f"{name}.dylib", f"{name}.framework")
+          manifest = manifest.replace('compatibility_minimum = "4.3"', f'compatibility_minimum = "{minimum}"')
+          manifest += "\n[dependencies]\n\n"
+          dependencies = {f"res://bin/{target}/{name}": "" for name in sorted(set(runtime))}
+          if platform in ("linux", "windows", "macos"):
+              dependencies[f"res://bin/{target}/usd"] = ""
+          for mode in ("debug", "release"):
+              manifest += f"{platform}.{mode}.{arch} = {json.dumps(dependencies)}\n"
+          (package / "godot_usd.gdextension").write_text(manifest, encoding="utf-8", newline="\n")
+          shutil.copy2(root / "LICENSE", package / "LICENSE")
+          shutil.copy2(root / "README.md", package / "README.md")
+          licenses = package / "licenses"
+          licenses.mkdir()
+          shutil.copy2(root / "deps/OpenUSD/LICENSE.txt", licenses / "OpenUSD.txt")
+          shutil.copy2(root / "deps/oneTBB/LICENSE.txt", licenses / "oneTBB.txt")
+          shutil.copy2(root / "deps/godot-cpp/LICENSE.md", licenses / "godot-cpp.md")
+          for text_file in [package / "LICENSE", package / "README.md", *licenses.iterdir()]:
+              text_file.write_text(text_file.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+          metadata = {
+              "godot": os.environ["GODOT_TAG"], "godot_cpp": os.environ["GODOT_CPP_REVISION"],
+              "openusd": os.environ["OPENUSD_VERSION"], "tbb": os.environ["TBB_VERSION"],
+              "platform": platform, "arch": arch, "commit": os.environ["GITHUB_SHA"],
+          }
+          (package / f"build-{target}.json").write_text(json.dumps(metadata, indent=2) + "\n")
+          PY
+      - name: Test the relocated package
+        if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'windows'
+        run: |
+          case "$PLATFORM" in
+            linux) asset="linux.$ARCH.zip"; executable="Godot_v${GODOT_TAG}_linux.$ARCH" ;;
+            macos) asset="macos.universal.zip"; executable="Godot.app/Contents/MacOS/Godot" ;;
+            windows)
+              if [ "$ARCH" = arm64 ]; then asset="windows_arm64.exe.zip"; else asset="win64.exe.zip"; fi
+              executable="Godot_v${GODOT_TAG}_${asset%.zip}"
+              ;;
+          esac
+          curl --fail --location --retry 3 \
+            "https://github.com/godotengine/godot/releases/download/$GODOT_TAG/Godot_v${GODOT_TAG}_$asset" \
+            -o "$RUNNER_TEMP/godot.zip"
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          godot="$RUNNER_TEMP/godot/$executable"
+          chmod +x "$godot"
+          test_project="$RUNNER_TEMP/test-project"
+          cp -R "$GITHUB_WORKSPACE/project" "$test_project"
+          rm -rf "$test_project/bin"
+          package="$GITHUB_WORKSPACE/dist/godot-usd-godot${GODOT_VERSION}-${PLATFORM}-${ARCH}"
+          cp -R "$package/bin" "$test_project/bin"
+          cp "$package/godot_usd.gdextension" "$test_project/godot_usd.gdextension"
+          # Hide the SDK to catch accidental runner-local runtime dependencies.
+          mv "$GITHUB_WORKSPACE/deps/sdk" "$GITHUB_WORKSPACE/deps/sdk-hidden"
+          trap 'mv "$GITHUB_WORKSPACE/deps/sdk-hidden" "$GITHUB_WORKSPACE/deps/sdk"' EXIT
+          "$godot" --headless --editor --path "$test_project" --import
+          "$godot" --headless --path "$test_project" --script res://test_load.gd
+          if [ "$PLATFORM" != windows ]; then
+            "$godot" --headless --path "$test_project" --script res://tests/run_all.gd
+          fi
+      - name: Archive package
+        run: |
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+          for package in Path("dist").iterdir():
+              if package.is_dir():
+                  shutil.make_archive(str(package), "zip", root_dir=package)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-usd-godot${{ needs.godot.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish tagged release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [godot, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          pattern: godot-usd-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble all-platform package
+        env:
+          GODOT_VERSION: ${{ needs.godot.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import zipfile
+          from pathlib import Path
+
+          directory = Path("dist")
+          archives = sorted(directory.glob("*.zip"))
+          if not archives:
+              raise RuntimeError("No platform packages were downloaded")
+          output = directory / f"godot-usd-godot{os.environ['GODOT_VERSION']}-all-platforms.zip"
+          seen = {}
+          header = None
+          dependencies = []
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as combined:
+              for path in archives:
+                  with zipfile.ZipFile(path) as archive:
+                      for entry in archive.infolist():
+                          data = archive.read(entry)
+                          if entry.filename == "godot_usd.gdextension":
+                              base, separator, dependency = data.decode().partition("\n[dependencies]\n")
+                              if not separator or (header is not None and base != header):
+                                  raise RuntimeError("Platform manifests disagree")
+                              header = base
+                              dependencies.append(dependency.strip())
+                              continue
+                          digest = hashlib.sha256(data).digest()
+                          if entry.filename in seen:
+                              if seen[entry.filename] != digest:
+                                  raise RuntimeError(f"Conflicting package file: {entry.filename}")
+                              continue
+                          seen[entry.filename] = digest
+                          combined.writestr(entry, data)
+              if header is None:
+                  raise RuntimeError("Packages contain no manifest")
+              combined.writestr("godot_usd.gdextension", header + "\n[dependencies]\n\n" + "\n".join(dependencies) + "\n")
+          PY
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GODOT_VERSION: ${{ needs.godot.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.zip > SHA256SUMS.txt
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG (Godot $GODOT_VERSION)" \
+              --notes "Debug and release GDExtensions for Godot $GODOT_VERSION, with OpenUSD/TBB runtime dependencies. See the included README and build metadata for platform requirements."
+          fi
+          gh release upload "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

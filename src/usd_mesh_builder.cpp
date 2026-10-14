@@ -568,7 +568,7 @@ void store_skin_binding_metadata(const UsdStageRefPtr &p_stage, const UsdTimeCod
 		Transform3D stage_correction;
 		const TfToken up_axis = UsdGeomGetStageUpAxis(p_stage);
 		if (up_axis == UsdGeomTokens->z) {
-			stage_correction = Transform3D(Basis(Vector3(1, 0, 0), (real_t)-Math_PI * 0.5).scaled(Vector3(UsdGeomGetStageMetersPerUnit(p_stage), UsdGeomGetStageMetersPerUnit(p_stage), UsdGeomGetStageMetersPerUnit(p_stage))), Vector3());
+			stage_correction = Transform3D(Basis(Vector3(1, 0, 0), Math::deg_to_rad((real_t)-90.0)).scaled(Vector3(UsdGeomGetStageMetersPerUnit(p_stage), UsdGeomGetStageMetersPerUnit(p_stage), UsdGeomGetStageMetersPerUnit(p_stage))), Vector3());
 		} else {
 			stage_correction = Transform3D(Basis().scaled(Vector3(UsdGeomGetStageMetersPerUnit(p_stage), UsdGeomGetStageMetersPerUnit(p_stage), UsdGeomGetStageMetersPerUnit(p_stage))), Vector3());
 		}
