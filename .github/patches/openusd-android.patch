@@ -29,3 +29,14 @@ diff --git a/pxr/base/arch/stackTrace.cpp b/pxr/base/arch/stackTrace.cpp
  #else
       return execv(path, argv);
  #endif
+diff --git a/pxr/base/arch/align.cpp b/pxr/base/arch/align.cpp
+--- a/pxr/base/arch/align.cpp
++++ b/pxr/base/arch/align.cpp
+@@ -28,2 +28,2 @@
+-#if defined(ARCH_OS_DARWIN) || (defined(ARCH_OS_LINUX) && defined(__GLIBCXX__) && !defined(_GLIBCXX_HAVE_ALIGNED_ALLOC))
++#if defined(ARCH_OS_DARWIN) || defined(__ANDROID__) || (defined(ARCH_OS_LINUX) && defined(__GLIBCXX__) && !defined(_GLIBCXX_HAVE_ALIGNED_ALLOC))
+     // alignment must be >= sizeof(void*)
+@@ -51,2 +51,2 @@
+-#if defined(ARCH_OS_DARWIN) || (defined(ARCH_OS_LINUX) && defined(__GLIBCXX__) && !defined(_GLIBCXX_HAVE_ALIGNED_ALLOC))
++#if defined(ARCH_OS_DARWIN) || defined(__ANDROID__) || (defined(ARCH_OS_LINUX) && defined(__GLIBCXX__) && !defined(_GLIBCXX_HAVE_ALIGNED_ALLOC))
+     free(ptr);

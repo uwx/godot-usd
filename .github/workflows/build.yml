@@ -92,7 +92,7 @@ jobs:
       run:
         shell: bash
     env:
-      PLATFORM: ${{ matrix.platform }}
+      TARGET_PLATFORM: ${{ matrix.platform }}
       ARCH: ${{ matrix.arch }}
       ANDROID_ABI: ${{ matrix.abi }}
       GODOT_VERSION: ${{ needs.godot.outputs.version }}
@@ -150,9 +150,9 @@ jobs:
         with:
           name: godot-api
           path: deps/api
-      - name: Cache dependency SDK
+      - name: Restore OpenUSD and TBB SDK cache
         id: sdk
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: deps/sdk
           key: sdk-v1-${{ matrix.os }}-${{ matrix.platform }}-${{ matrix.arch }}-usd${{ env.OPENUSD_VERSION }}-tbb${{ env.TBB_VERSION }}-ndk${{ env.NDK_VERSION }}-em${{ env.EMSCRIPTEN_VERSION }}-${{ hashFiles('SConstruct', '.github/workflows/build.yml', '.github/patches/openusd-android.patch') }}
@@ -163,7 +163,7 @@ jobs:
           common=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$sdk"
             -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
           shared=ON
-          case "$PLATFORM" in
+          case "$TARGET_PLATFORM" in
             macos)
               common+=(-DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
                 '-DCMAKE_INSTALL_RPATH=@loader_path' -DCMAKE_INSTALL_NAME_DIR=@rpath)
@@ -171,7 +171,7 @@ jobs:
             ios)
               shared=OFF
               common+=(-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos
-                -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+                -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
                 -DCMAKE_FIND_ROOT_PATH="$sdk"
                 '-DCMAKE_INSTALL_RPATH=@loader_path' -DCMAKE_INSTALL_NAME_DIR=@rpath)
               ;;
@@ -207,20 +207,27 @@ jobs:
             -DPXR_BUILD_EXEC=OFF -DPXR_BUILD_USD_VALIDATION=OFF -DPXR_BUILD_APPLE_FRAMEWORK=OFF
           cmake --build "$RUNNER_TEMP/usd-build" --parallel 2
           cmake --install "$RUNNER_TEMP/usd-build"
+          touch "$sdk/.complete"
+      - name: Save OpenUSD and TBB SDK cache
+        if: always() && steps.sdk.outputs.cache-hit != 'true' && hashFiles('deps/sdk/.complete') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: deps/sdk
+          key: sdk-v1-${{ matrix.os }}-${{ matrix.platform }}-${{ matrix.arch }}-usd${{ env.OPENUSD_VERSION }}-tbb${{ env.TBB_VERSION }}-ndk${{ env.NDK_VERSION }}-em${{ env.EMSCRIPTEN_VERSION }}-${{ hashFiles('SConstruct', '.github/workflows/build.yml', '.github/patches/openusd-android.patch') }}
       - name: Build debug and release GDExtensions
         run: |
           extra=()
-          if [ "$PLATFORM" = windows ]; then
+          if [ "$TARGET_PLATFORM" = windows ]; then
             extra+=(use_static_cpp=no)
           fi
-          if [ "$PLATFORM" = web ] || [ "$PLATFORM" = ios ]; then
+          if [ "$TARGET_PLATFORM" = web ] || [ "$TARGET_PLATFORM" = ios ]; then
             extra+=(static_usd=yes)
           fi
-          if [ "$PLATFORM" = web ]; then
+          if [ "$TARGET_PLATFORM" = web ]; then
             source "$GITHUB_WORKSPACE/deps/emsdk/emsdk_env.sh"
           fi
           for target in template_debug template_release; do
-            python -m SCons platform="$PLATFORM" arch="$ARCH" target="$target" \
+            python -m SCons platform="$TARGET_PLATFORM" arch="$ARCH" target="$target" \
               godot_cpp_path="$GITHUB_WORKSPACE/deps/godot-cpp" \
               usd_sdk_path="$GITHUB_WORKSPACE/deps/sdk" \
               tbb_sdk_path="$GITHUB_WORKSPACE/deps/sdk" \
@@ -239,7 +246,7 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["GITHUB_WORKSPACE"])
-          platform, arch = os.environ["PLATFORM"], os.environ["ARCH"]
+          platform, arch = os.environ["TARGET_PLATFORM"], os.environ["ARCH"]
           target = f"{platform}-{arch}"
           package = root / "dist" / f"godot-usd-godot{os.environ['GODOT_VERSION']}-{target}"
           binary_dir = package / "bin" / target
@@ -276,7 +283,7 @@ jobs:
                       "CFBundleExecutable": name, "CFBundleName": name,
                       "CFBundleIdentifier": f"org.godot-usd.{name.replace('_', '-')}",
                       "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
-                      "CFBundleShortVersionString": "1.0", "MinimumOSVersion": "12.0",
+                      "CFBundleShortVersionString": "1.0", "MinimumOSVersion": "13.0",
                       "CFBundleSupportedPlatforms": ["iPhoneOS"],
                   }
                   (framework / "Info.plist").write_bytes(plistlib.dumps(info))
@@ -321,7 +328,7 @@ jobs:
       - name: Test the relocated package
         if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'windows'
         run: |
-          case "$PLATFORM" in
+          case "$TARGET_PLATFORM" in
             linux) asset="linux.$ARCH.zip"; executable="Godot_v${GODOT_TAG}_linux.$ARCH" ;;
             macos) asset="macos.universal.zip"; executable="Godot.app/Contents/MacOS/Godot" ;;
             windows)
@@ -338,16 +345,16 @@ jobs:
           test_project="$RUNNER_TEMP/test-project"
           cp -R "$GITHUB_WORKSPACE/project" "$test_project"
           rm -rf "$test_project/bin"
-          package="$GITHUB_WORKSPACE/dist/godot-usd-godot${GODOT_VERSION}-${PLATFORM}-${ARCH}"
+          package="$GITHUB_WORKSPACE/dist/godot-usd-godot${GODOT_VERSION}-${TARGET_PLATFORM}-${ARCH}"
           cp -R "$package/bin" "$test_project/bin"
           cp "$package/godot_usd.gdextension" "$test_project/godot_usd.gdextension"
           # Hide the SDK to catch accidental runner-local runtime dependencies.
           mv "$GITHUB_WORKSPACE/deps/sdk" "$GITHUB_WORKSPACE/deps/sdk-hidden"
           trap 'mv "$GITHUB_WORKSPACE/deps/sdk-hidden" "$GITHUB_WORKSPACE/deps/sdk"' EXIT
-          "$godot" --headless --editor --path "$test_project" --import
-          "$godot" --headless --path "$test_project" --script res://test_load.gd
-          if [ "$PLATFORM" != windows ]; then
-            "$godot" --headless --path "$test_project" --script res://tests/run_all.gd
+          "$godot" --headless --rendering-method gl_compatibility --editor --path "$test_project" --import
+          "$godot" --headless --rendering-method gl_compatibility --path "$test_project" --script res://test_load.gd
+          if [ "$TARGET_PLATFORM" != windows ]; then
+            "$godot" --headless --rendering-method gl_compatibility --path "$test_project" --script res://tests/run_all.gd
           fi
       - name: Archive package
         run: |
