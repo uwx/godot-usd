@@ -97,7 +97,7 @@ func _run_test_process(executable: String, project_path: String, test_name: Stri
 	_remove_file(log_path)
 	_remove_file(status_path)
 
-	var args := PackedStringArray(["--headless"])
+	var args := PackedStringArray(["--headless", "--rendering-method", "gl_compatibility"])
 	if EDITOR_TESTS.has(test_name):
 		args.append("--editor")
 	args.append("--path")
