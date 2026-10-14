@@ -351,6 +351,7 @@ jobs:
           # Hide the SDK to catch accidental runner-local runtime dependencies.
           mv "$GITHUB_WORKSPACE/deps/sdk" "$GITHUB_WORKSPACE/deps/sdk-hidden"
           trap 'mv "$GITHUB_WORKSPACE/deps/sdk-hidden" "$GITHUB_WORKSPACE/deps/sdk"' EXIT
+          "$godot" --headless --rendering-method gl_compatibility --rendering-driver opengl3 --editor --path "$test_project" --import
           "$godot" --headless --rendering-method gl_compatibility --rendering-driver opengl3 --path "$test_project" --script res://test_load.gd
           if [ "$TARGET_PLATFORM" != windows ]; then
             "$godot" --headless --rendering-method gl_compatibility --rendering-driver opengl3 --path "$test_project" --script res://tests/run_all.gd
