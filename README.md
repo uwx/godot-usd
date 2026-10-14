@@ -118,7 +118,9 @@ Platform requirements:
 - iOS targets iOS 13 or newer. Each extension is packaged as an unsigned framework
   with USD/TBB statically linked and plugin resources inside the framework, avoiding
   broken references when Godot embeds frameworks. Sign them during Xcode export.
-- Android builds use NDK 28.1.13356709, API 24, and bundle `libc++_shared.so`.
+- Android builds use NDK 28.1.13356709, API 28 or newer, and bundle `libc++_shared.so`.
+  API 28 is required because OpenUSD uses `glob`/`globfree`, which Android exposes starting
+  at that API level.
   A narrowly scoped patch addresses OpenUSD's Android `NOFILE`/`__environ`/`aligned_alloc` build
   issues ([upstream #4093](https://github.com/PixarAnimationStudios/OpenUSD/issues/4093)).
   Android/iOS exports must extract packed USD assets and their dependencies to a
