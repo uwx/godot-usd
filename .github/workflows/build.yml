@@ -351,11 +351,24 @@ jobs:
           # Hide the SDK to catch accidental runner-local runtime dependencies.
           mv "$GITHUB_WORKSPACE/deps/sdk" "$GITHUB_WORKSPACE/deps/sdk-hidden"
           trap 'mv "$GITHUB_WORKSPACE/deps/sdk-hidden" "$GITHUB_WORKSPACE/deps/sdk"' EXIT
-          # Godot 4.7 can segfault while shutting down a cold editor that is still
-          # regenerating its doc cache for GDExtension classes. Warm the caches first
-          # (tolerating that crash), then require a clean import.
-          "$godot" --headless --editor --path "$test_project" --import || echo "Cold editor import exited with $?; retrying with warm caches"
-          "$godot" --headless --editor --path "$test_project" --import
+          # Godot 4.7 has an upstream shutdown race where a cold editor import
+          # segfaults after the import itself completes while deferred
+          # GDExtension documentation generation is still pending
+          # (godotengine/godot#111048, godotengine/godot#111645). The frame delay
+          # gives that deferred work time to run before the editor shuts down;
+          # the bounded retry covers any remaining timing differences.
+          for attempt in 1 2 3; do
+            if "$godot" --headless --editor --frame-delay 800 --path "$test_project" --import; then
+              break
+            else
+              status=$?
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Editor import failed after 3 attempts (exit $status)" >&2
+              exit "$status"
+            fi
+            echo "Editor import attempt $attempt exited with $status; retrying with a warm cache" >&2
+          done
           "$godot" --headless --path "$test_project" --script res://test_load.gd
           if [ "$TARGET_PLATFORM" != windows ]; then
             "$godot" --headless --path "$test_project" --script res://tests/run_all.gd
